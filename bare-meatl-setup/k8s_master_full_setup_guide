@@ -1,0 +1,213 @@
+
+# 🧠 Kubernetes Master Node - Full Setup Guide (AWS EC2)
+
+This guide walks through a complete setup of a **Kubernetes master node** from scratch on AWS EC2 using Ubuntu 22.04.  
+Includes every step — from initial server preparation, package installation, cluster initialization, network setup (Calico), to verification.
+
+---
+
+## 🚀 1️⃣ Initial Server Setup
+
+### 🧩 Step 1: Update and Upgrade Packages
+```bash
+sudo apt update -y && sudo apt upgrade -y
+```
+
+**Why:** Ensures you have the latest Linux packages and kernel updates to prevent dependency errors during Kubernetes setup.
+
+---
+
+### 🧩 Step 2: Disable Swap
+```bash
+sudo swapoff -a
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
+```
+
+**Why:** Kubernetes requires swap to be disabled for memory management consistency.
+
+---
+
+### 🧩 Step 3: Load Required Kernel Modules
+```bash
+sudo modprobe overlay
+sudo modprobe br_netfilter
+```
+
+Then enable them persistently:
+```bash
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+```
+
+**Why:** These modules are needed for container networking and bridging between pods.
+
+---
+
+### 🧩 Step 4: Configure Network Settings
+```bash
+cat <<EOF | sudo tee /etc/sysctl.d/kubernetes.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+EOF
+
+sudo sysctl --system
+```
+
+**Why:** Enables packet forwarding and ensures Kubernetes networking functions properly.
+
+---
+
+## 🧰 2️⃣ Install Container Runtime (containerd)
+
+```bash
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+sudo apt update
+sudo apt install -y containerd.io
+```
+
+Configure containerd:
+```bash
+sudo mkdir -p /etc/containerd
+containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+```
+
+**Why:** containerd is the recommended container runtime for Kubernetes (lightweight, secure, CNCF-certified).
+
+---
+
+## 🧭 3️⃣ Install Kubernetes Packages
+
+### Add Kubernetes Repository
+```bash
+sudo mkdir -p /etc/apt/keyrings
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+```
+
+### Install kubeadm, kubelet, kubectl
+```bash
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+sudo systemctl enable kubelet
+```
+
+**Why:**  
+- `kubeadm` bootstraps your cluster  
+- `kubelet` runs pods on nodes  
+- `kubectl` lets you manage the cluster
+
+---
+
+## ⚙️ 4️⃣ Initialize the Kubernetes Master Node
+
+Run:
+```bash
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+```
+
+If you see any error like `ip_forward not set`, fix it:
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+sudo systemctl restart containerd
+sudo kubeadm reset -f
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+```
+
+When it completes successfully, you’ll get a join command — save it for worker nodes.
+
+---
+
+### Setup kubectl for the ubuntu user
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+Verify cluster status:
+```bash
+kubectl get nodes
+kubectl get pods -n kube-system
+```
+
+---
+
+## 🌐 5️⃣ Install Calico CNI (Network Plugin)
+
+```bash
+kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+```
+
+Check pods:
+```bash
+kubectl get pods -n kube-system
+```
+
+✅ You should see all Calico and core Kubernetes pods in `Running` state.
+
+---
+
+## 🧹 6️⃣ Troubleshooting Common Errors
+
+### ❌ Error: `connection refused on localhost:8080`
+**Fix:**
+Your kubeconfig file might not be copied or accessible. Run:
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+### ❌ Error: `ip_forward not set`
+**Fix:**
+```bash
+sudo sysctl -w net.ipv4.ip_forward=1
+```
+
+### ❌ Error: containerd.sock missing
+**Fix:**
+```bash
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+```
+
+---
+
+## 🔁 7️⃣ Resetting the Master Node (Cleanup Script)
+
+If you ever want to start over:
+```bash
+sudo systemctl stop kubelet
+sudo systemctl stop containerd
+sudo kubeadm reset -f
+sudo rm -rf /etc/kubernetes/ /var/lib/etcd/ /var/lib/kubelet/ /var/lib/cni/ /etc/cni/ /var/lib/calico/ /var/run/calico/ ~/.kube
+sudo rm -rf /var/lib/containerd/*
+sudo systemctl restart containerd
+```
+
+---
+
+## ✅ 8️⃣ Verification
+
+```bash
+kubectl get nodes -o wide
+kubectl get pods -n kube-system -o wide
+```
+
+Expected output:
+```
+NAME      STATUS   ROLES           AGE   VERSION
+master    Ready    control-plane   10m   v1.31.13
+```
+
+---
+
+🎯 **Your Kubernetes Master Node is now fully operational and production-ready!**
